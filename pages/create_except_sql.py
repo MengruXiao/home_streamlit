@@ -41,6 +41,7 @@ st.title('except对比语句快速创建')
 
 text_input1 = st.text_area('输入您的基础表DDL', '')
 text_input2 = st.text_area('输入对比表名(默认两表的ddl一样)', '')
+text_input3 = st.text_area('输入需要忽略的字段(多个字段用逗号分隔，例如: field1,field2,field3)', '')
 
 if st.button('处理并导出'):
         
@@ -68,13 +69,28 @@ if st.button('处理并导出'):
                             columns.append((column_name, type))   
 
                 if columns:
-                    st.write('生成的except语句为:')
+                    # 处理需要忽略的字段
+                    ignore_fields = []
+                    if text_input3:
+                        # 去除空格并分割字段
+                        ignore_fields = [field.strip() for field in text_input3.split(',') if field.strip()]
+                        st.info(f'将忽略以下字段: {", ".join(ignore_fields)}')
+                    
                     df = pd.DataFrame(columns, columns=['column_name','type'])
-                    # st.dataframe(df)
-                    table_name_basic = lines[0].split(' ')[2]
-                    table_name_compare = text_input2
-                    sql = except_sql_fun(df, table_name_basic,table_name_compare)
-                    st.code(sql, language='sql')                          
+                    
+                    # 过滤掉需要忽略的字段
+                    if ignore_fields:
+                        df = df[~df['column_name'].isin(ignore_fields)]
+                        st.write(f'原始字段数: {len(columns)}, 过滤后字段数: {len(df)}')
+                    
+                    if len(df) > 0:
+                        st.write('生成的except语句为:')
+                        table_name_basic = lines[0].split(' ')[2]
+                        table_name_compare = text_input2
+                        sql = except_sql_fun(df, table_name_basic,table_name_compare)
+                        st.code(sql, language='sql')
+                    else:
+                        st.warning('过滤后没有剩余字段，请检查忽略字段列表。')
                         
 
                 else:
