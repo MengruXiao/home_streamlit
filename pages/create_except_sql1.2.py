@@ -2,34 +2,39 @@ import streamlit as st
 import pandas as pd
 
 
-def except_sql_fun(df, table_name_basic,table_name_compare):
+def except_sql_fun(df, table_name_basic, table_name_compare, where_basic='', where_compare=''):
 
     column_names = df["column_name"].tolist()
     column_names_all = (',\n    '.join(column_names))
+    
+    # 构建基础表的WHERE子句
+    where_clause_basic = f'\nwhere {where_basic}' if where_basic.strip() else ''
+    # 构建对比表的WHERE子句
+    where_clause_compare = f'\nwhere {where_compare}' if where_compare.strip() else ''
      
     except_sql1 = f'''
 select 
     {column_names_all}    
-from  {table_name_basic} 
+from  {table_name_basic}{where_clause_basic}
 
 EXCEPT
 
 select 
     {column_names_all}    
-from  {table_name_compare};
+from  {table_name_compare}{where_clause_compare};
 
      '''
 
     except_sql2 = f'''
 select 
     {column_names_all}    
-from  {table_name_compare} 
+from  {table_name_compare}{where_clause_compare}
 
 EXCEPT
 
 select 
     {column_names_all}    
-from  {table_name_basic};
+from  {table_name_basic}{where_clause_basic};
 
      '''
     sql = except_sql1+'\n'+'\n'+except_sql2
@@ -42,6 +47,10 @@ st.title('except对比语句快速创建')
 text_input1 = st.text_area('输入您的基础表DDL', '')
 text_input2 = st.text_area('输入对比表名(默认两表的ddl一样)', '')
 text_input3 = st.text_area('输入需要忽略的字段(多个字段用逗号分隔，例如: field1,field2,field3)', '')
+text_input4 = st.text_area('输入基础表的WHERE条件(可选，不需要写WHERE关键字)', '', 
+                           help='例如: version_no = \'2025Q2V2\' and date > \'2024-01-01\'')
+text_input5 = st.text_area('输入对比表的WHERE条件(可选，不需要写WHERE关键字)', '',
+                           help='例如: version_no = \'2025Q2V2\' and date > \'2024-01-01\'')
 
 if st.button('处理并导出'):
         
@@ -82,12 +91,20 @@ if st.button('处理并导出'):
                     if ignore_fields:
                         df = df[~df['column_name'].isin(ignore_fields)]
                         st.write(f'原始字段数: {len(columns)}, 过滤后字段数: {len(df)}')
-                    
-                    if len(df) > 0:
+                      if len(df) > 0:
                         st.write('生成的except语句为:')
                         table_name_basic = lines[0].split(' ')[2]
                         table_name_compare = text_input2
-                        sql = except_sql_fun(df, table_name_basic,table_name_compare)
+                        where_basic = text_input4.strip()
+                        where_compare = text_input5.strip()
+                        
+                        # 显示应用的WHERE条件
+                        if where_basic:
+                            st.info(f'基础表WHERE条件: {where_basic}')
+                        if where_compare:
+                            st.info(f'对比表WHERE条件: {where_compare}')
+                        
+                        sql = except_sql_fun(df, table_name_basic, table_name_compare, where_basic, where_compare)
                         st.code(sql, language='sql')
                     else:
                         st.warning('过滤后没有剩余字段，请检查忽略字段列表。')
