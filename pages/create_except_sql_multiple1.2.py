@@ -1,0 +1,379 @@
+import streamlit as st
+import pandas as pd
+
+
+def except_sql_fun(df, table_name_basic, table_name_compare, where_basic='', where_compare=''):
+
+    column_names = df["column_name"].tolist()
+    column_names_all = (',\n    '.join(column_names))
+    
+    # 构建基础表的WHERE子句
+    where_clause_basic = f'\nwhere {where_basic}' if where_basic.strip() else ''
+    # 构建对比表的WHERE子句
+    where_clause_compare = f'\nwhere {where_compare}' if where_compare.strip() else ''
+     
+    except_sql1 = f'''
+select 
+    {column_names_all}    
+from  {table_name_basic}{where_clause_basic}
+
+EXCEPT
+
+select 
+    {column_names_all}    
+from  {table_name_compare}{where_clause_compare};
+
+     '''
+
+    except_sql2 = f'''
+select 
+    {column_names_all}    
+from  {table_name_compare}{where_clause_compare}
+
+EXCEPT
+
+select 
+    {column_names_all}    
+from  {table_name_basic}{where_clause_basic};
+
+     '''
+    sql = except_sql1+'\n'+'\n'+except_sql2
+
+    return sql
+
+
+st.title('except对比语句快速创建')
+
+# 添加批量处理模式选择
+processing_mode = st.radio('选择处理模式', ['单表对比', '批量对比（文本输入）', '批量对比（文件上传）'], horizontal=True)
+
+if processing_mode == '单表对比':
+    text_input1 = st.text_area('输入您的基础表DDL', '')
+    text_input2 = st.text_area('输入对比表名(默认两表的ddl一样)', '')
+    text_input3 = st.text_area('输入需要忽略的字段(多个字段用逗号分隔，例如: field1,field2,field3)', '')
+    text_input4 = st.text_area('输入基础表的WHERE条件(可选，不需要写WHERE关键字)', '', 
+                               help='例如: version_no = \'2025Q2V2\' and date > \'2024-01-01\'')
+    text_input5 = st.text_area('输入对比表的WHERE条件(可选，不需要写WHERE关键字)', '',
+                               help='例如: version_no = \'2025Q2V2\' and date > \'2024-01-01\'')
+elif processing_mode == '批量对比（文本输入）':
+    st.info('批量模式说明：每行输入一对表名，格式为 "基础表DDL|对比表名"，可选添加WHERE条件 "|基础表WHERE|对比表WHERE"')
+    batch_input = st.text_area('批量输入表对（每行一对）', 
+                               height=200,
+                               help='格式示例：\nCREATE TABLE schema.table1...|schema.table2\nCREATE TABLE schema.table3...|schema.table4|version_no=\'2025Q2V2\'|version_no=\'2025Q2V2\'')
+    text_input3 = st.text_area('输入需要忽略的字段(多个字段用逗号分隔，对所有表生效)', '')
+else:  # 批量对比（文件上传）
+    st.info('📁 批量上传DDL文件模式：上传多个DDL文件（.sql或.txt格式），系统会自动为每个文件生成对比SQL语句')
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        uploaded_files = st.file_uploader(
+            "上传基础表DDL文件（可多选）", 
+            type=['sql', 'txt'],
+            accept_multiple_files=True,
+            help='支持上传多个DDL文件，每个文件包含一个CREATE TABLE语句'
+        )
+    with col2:
+        compare_suffix = st.text_input(
+            '对比表后缀或替换规则', 
+            '_compare',
+            help='例如：输入 "_compare" 则 table1 对比 table1_compare'
+        )
+    
+    text_input3 = st.text_area('输入需要忽略的字段(多个字段用逗号分隔，对所有表生效)', '')
+    
+    # WHERE条件设置
+    st.subheader('WHERE条件设置（可选）')
+    col3, col4 = st.columns(2)
+    with col3:
+        global_where_basic = st.text_area(
+            '全局基础表WHERE条件', 
+            '',
+            help='将应用到所有基础表，例如: version_no = \'2025Q2V2\''
+        )
+    with col4:
+        global_where_compare = st.text_area(
+            '全局对比表WHERE条件', 
+            '',
+            help='将应用到所有对比表，例如: version_no = \'2025Q2V2\''
+        )
+
+def process_single_table(ddl_text, compare_table, ignore_fields, where_basic='', where_compare=''):
+    """处理单个表对"""
+    lines = ddl_text.splitlines()
+    
+    # 清理空行
+    lines = [line for line in lines if line.strip()]
+    
+    if not lines:
+        return None, 'DDL内容为空'
+    
+    columns = []
+    table_name_basic = None
+    
+    # 解析表名
+    first_line = lines[0].strip()
+    if 'CREATE TABLE' in first_line.upper():
+        # 提取表名 - 处理可能的多种格式
+        parts = first_line.split()
+        for i, part in enumerate(parts):
+            if part.upper() == 'TABLE' and i + 1 < len(parts):
+                table_name_basic = parts[i + 1].rstrip('(').strip()
+                break
+    
+    if not table_name_basic:
+        return None, '无法从DDL中提取表名'
+    
+    # 解析字段
+    for line in lines[1:]:
+        line_stripped = line.strip()
+        
+        # 跳过结束括号和其他非字段定义行
+        if line_stripped.startswith(')') or line_stripped.startswith('DISTSTYLE') or \
+           line_stripped.startswith('SORTKEY') or not line_stripped:
+            continue
+            
+        # 处理逗号
+        if ", " in line_stripped:
+            line_stripped = line_stripped.replace(', ', ',')
+        
+        # 移除末尾的逗号
+        if line_stripped.endswith(','):
+            line_stripped = line_stripped[:-1]
+        
+        parts = line_stripped.split()
+        if len(parts) >= 2:
+            column_name = parts[0].strip()
+            
+            # 跳过约束关键字
+            if column_name.upper() in ['PRIMARY', 'FOREIGN', 'UNIQUE', 'CHECK', 'CONSTRAINT']:
+                continue
+            
+            # 处理数据类型
+            if parts[1] == 'character':
+                type_name = parts[2].replace('varying', 'varchar')
+            elif parts[1] == 'timestamp':
+                type_name = 'datetime'
+            elif parts[1] == 'integer':
+                type_name = 'int'
+            else:
+                type_name = parts[1]
+            
+            columns.append((column_name, type_name))
+    
+    if not columns:
+        return None, '没有找到有效的字段定义'
+    
+    df = pd.DataFrame(columns, columns=['column_name', 'type'])
+    
+    # 过滤掉需要忽略的字段
+    if ignore_fields:
+        df = df[~df['column_name'].isin(ignore_fields)]
+    
+    if len(df) == 0:
+        return None, '过滤后没有剩余字段，请检查忽略字段列表'
+    
+    sql = except_sql_fun(df, table_name_basic, compare_table, where_basic, where_compare)
+    
+    return sql, None
+
+
+if st.button('处理并导出'):
+    if processing_mode == '单表对比':
+        if text_input1 and text_input2:
+            # 处理需要忽略的字段
+            ignore_fields = []
+            if text_input3:
+                ignore_fields = [field.strip() for field in text_input3.split(',') if field.strip()]
+                st.info(f'将忽略以下字段: {", ".join(ignore_fields)}')
+            
+            where_basic = text_input4.strip() if 'text_input4' in locals() else ''
+            where_compare = text_input5.strip() if 'text_input5' in locals() else ''
+            
+            # 显示应用的WHERE条件
+            if where_basic:
+                st.info(f'基础表WHERE条件: {where_basic}')
+            if where_compare:
+                st.info(f'对比表WHERE条件: {where_compare}')
+            
+            sql, error = process_single_table(text_input1, text_input2, ignore_fields, where_basic, where_compare)
+            
+            if sql:
+                st.write('生成的except语句为:')
+                st.code(sql, language='sql')
+            else:
+                st.warning(error)
+        else:
+            st.warning('两个框都要输入')
+    
+    elif processing_mode == '批量对比（文本输入）':  # 批量文本输入模式
+        if batch_input:
+            # 处理需要忽略的字段
+            ignore_fields = []
+            if text_input3:
+                ignore_fields = [field.strip() for field in text_input3.split(',') if field.strip()]
+                st.info(f'将忽略以下字段: {", ".join(ignore_fields)}')
+            
+            lines = batch_input.strip().split('\n')
+            all_sqls = []
+            success_count = 0
+            error_count = 0
+            
+            st.write(f'开始批量处理 {len(lines)} 对表...')
+            
+            for idx, line in enumerate(lines, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                parts = line.split('|')
+                if len(parts) < 2:
+                    st.warning(f'第{idx}行格式错误，跳过: {line}')
+                    error_count += 1
+                    continue
+                
+                ddl_text = parts[0].strip()
+                compare_table = parts[1].strip()
+                where_basic = parts[2].strip() if len(parts) > 2 else ''
+                where_compare = parts[3].strip() if len(parts) > 3 else ''
+                
+                with st.expander(f'处理第{idx}对: {compare_table}'):
+                    if where_basic:
+                        st.info(f'基础表WHERE条件: {where_basic}')
+                    if where_compare:
+                        st.info(f'对比表WHERE条件: {where_compare}')
+                    
+                    sql, error = process_single_table(ddl_text, compare_table, ignore_fields, where_basic, where_compare)
+                    
+                    if sql:
+                        st.code(sql, language='sql')
+                        all_sqls.append(f'-- 表对 {idx}: {compare_table}\n{sql}')
+                        success_count += 1
+                    else:
+                        st.error(f'错误: {error}')
+                        error_count += 1
+            
+            if all_sqls:
+                st.success(f'批量处理完成！成功: {success_count}, 失败: {error_count}')
+                st.write('### 所有生成的SQL语句:')
+                combined_sql = '\n\n' + '\n\n'.join(all_sqls)
+                st.code(combined_sql, language='sql')
+                
+                # 提供下载按钮
+                st.download_button(
+                    label='下载所有SQL语句',
+                    data=combined_sql,
+                    file_name='batch_except_sql.sql',
+                    mime='text/plain'
+                )
+            else:
+                st.error('没有成功生成任何SQL语句')
+        else:
+            st.warning('请输入批量表对信息')
+    
+    else:  # 批量文件上传模式
+        if uploaded_files:
+            # 处理需要忽略的字段
+            ignore_fields = []
+            if text_input3:
+                ignore_fields = [field.strip() for field in text_input3.split(',') if field.strip()]
+                st.info(f'将忽略以下字段: {", ".join(ignore_fields)}')
+            
+            # 显示全局WHERE条件
+            where_basic_global = global_where_basic.strip() if 'global_where_basic' in locals() else ''
+            where_compare_global = global_where_compare.strip() if 'global_where_compare' in locals() else ''
+            
+            if where_basic_global:
+                st.info(f'全局基础表WHERE条件: {where_basic_global}')
+            if where_compare_global:
+                st.info(f'全局对比表WHERE条件: {where_compare_global}')
+            
+            all_sqls = []
+            success_count = 0
+            error_count = 0
+            
+            st.write(f'开始批量处理 {len(uploaded_files)} 个DDL文件...')
+            
+            for idx, uploaded_file in enumerate(uploaded_files, 1):
+                # 读取文件内容
+                try:
+                    ddl_content = uploaded_file.read().decode('utf-8')
+                except Exception as e:
+                    st.error(f'文件 {uploaded_file.name} 读取失败: {str(e)}')
+                    error_count += 1
+                    continue
+                
+                # 从DDL中提取表名
+                ddl_lines = ddl_content.strip().splitlines()
+                base_table_name = None
+                for line in ddl_lines:
+                    if 'CREATE TABLE' in line.upper():
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if part.upper() == 'TABLE' and i + 1 < len(parts):
+                                base_table_name = parts[i + 1].rstrip('(').strip()
+                                break
+                        break
+                
+                if not base_table_name:
+                    st.warning(f'文件 {uploaded_file.name}: 无法提取表名，跳过')
+                    error_count += 1
+                    continue
+                
+                # 生成对比表名
+                if compare_suffix:
+                    # 如果包含schema，需要正确处理
+                    if '.' in base_table_name:
+                        schema, table = base_table_name.rsplit('.', 1)
+                        compare_table = f'{schema}.{table}{compare_suffix}'
+                    else:
+                        compare_table = f'{base_table_name}{compare_suffix}'
+                else:
+                    compare_table = base_table_name + '_compare'
+                
+                with st.expander(f'📄 处理文件 {idx}/{len(uploaded_files)}: {uploaded_file.name}'):
+                    st.write(f'基础表: `{base_table_name}`')
+                    st.write(f'对比表: `{compare_table}`')
+                    
+                    sql, error = process_single_table(
+                        ddl_content, 
+                        compare_table, 
+                        ignore_fields, 
+                        where_basic_global, 
+                        where_compare_global
+                    )
+                    
+                    if sql:
+                        st.code(sql, language='sql')
+                        all_sqls.append(f'-- 文件: {uploaded_file.name}\n-- 基础表: {base_table_name}\n-- 对比表: {compare_table}\n{sql}')
+                        success_count += 1
+                    else:
+                        st.error(f'错误: {error}')
+                        error_count += 1
+            
+            if all_sqls:
+                st.success(f'✅ 批量处理完成！成功: {success_count}, 失败: {error_count}')
+                st.write('### 所有生成的SQL语句:')
+                combined_sql = '\n\n' + '\n\n'.join(all_sqls)
+                st.code(combined_sql, language='sql')
+                
+                # 提供下载按钮
+                st.download_button(
+                    label='📥 下载所有SQL语句',
+                    data=combined_sql,
+                    file_name='batch_except_sql_from_files.sql',
+                    mime='text/plain'
+                )
+            else:
+                st.error('❌ 没有成功生成任何SQL语句')
+        else:
+            st.warning('⚠️ 请上传至少一个DDL文件')
+
+else:
+    if processing_mode == '单表对比':
+        st.warning('请先输入ddl')
+    elif processing_mode == '批量对比（文本输入）':
+        st.warning('请输入批量表对信息')
+    else:
+        st.warning('请上传DDL文件')
+
+
