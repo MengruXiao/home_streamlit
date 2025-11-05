@@ -1,6 +1,37 @@
 import streamlit as st
 import pandas as pd
+from pathlib import Path
 
+COLS_NUM = 4
+MAX_TEMP_FILES = 10
+TEST_EXCEL = Path("static/示例ddl.sql")
+
+def download_button(button_name:str, file_path: Path, file_type: str) -> None:
+    try:
+        with open(file_path, "rb") as file:
+            file_bytes = file.read()
+        if file_type in ['xlsx','zip','json','txt','sql']:
+            if file_type == 'xlsx':
+                mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            elif file_type == 'zip':
+                mime_type = "application/zip"
+            elif file_type == 'json':
+                mime_type = "application/json"
+            elif file_type in ['txt', 'sql']:
+                mime_type = "text/plain"
+            else:
+                st.error(f"file_type: {file_type}. Unsupported file type.")
+                mime_type = "text/plain"
+            st.download_button(
+                label=button_name,
+                data=file_bytes,
+                file_name=file_path.name,
+                mime=mime_type
+            )
+        else:
+            st.error(f"file_type: {file_type}. Unsupported file type.")
+    except FileNotFoundError:
+        st.error(f"File not found: {file_path}")
 
 def except_sql_fun(df, table_name_basic, table_name_compare, where_basic='', where_compare=''):
 
@@ -43,6 +74,7 @@ from  {table_name_basic}{where_clause_basic};
 
 
 st.title('except对比语句快速创建')
+download_button("模板下载", TEST_EXCEL, 'sql')
 
 # 添加批量处理模式选择
 processing_mode = st.radio('选择处理模式', ['单表对比', '批量对比（文本输入）', '批量对比（文件上传）'], horizontal=True)
