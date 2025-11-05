@@ -97,7 +97,11 @@ elif processing_mode == '批量对比（文本输入）':
             help='将应用到所有对比表'
         )
 else:  # 批量对比（文件上传）
-    st.info('📁 批量上传DDL文件模式：上传多个DDL文件（.sql或.txt格式），系统会自动为每个文件生成对比SQL语句')
+    st.info('📁 批量上传DDL文件模式：支持两种文件格式')
+    st.markdown('''
+    - **单个DDL文件**：每个文件包含一个CREATE TABLE语句
+    - **批量DDL文件**：单个文件包含多个DDL，用分号 `;` 分隔
+    ''')
     
     col1, col2 = st.columns(2)
     with col1:
@@ -105,7 +109,7 @@ else:  # 批量对比（文件上传）
             "上传基础表DDL文件（可多选）", 
             type=['sql', 'txt'],
             accept_multiple_files=True,
-            help='支持上传多个DDL文件，每个文件包含一个CREATE TABLE语句'
+            help='支持上传多个DDL文件。文件内可以包含单个DDL或用分号分隔的多个DDL'
         )
     with col2:
         compare_suffix = st.text_input(
@@ -330,8 +334,7 @@ if st.button('处理并导出'):
                         label='📥 下载所有SQL语句',
                         data=combined_sql,
                         file_name='batch_except_sql_semicolon.sql',
-                        mime='text/plain'
-                    )
+                        mime='text/plain'                    )
                 else:
                     st.error('❌ 没有成功生成任何SQL语句')
             
@@ -416,10 +419,11 @@ if st.button('处理并导出'):
             all_sqls = []
             success_count = 0
             error_count = 0
+            total_ddl_count = 0
             
-            st.write(f'开始批量处理 {len(uploaded_files)} 个DDL文件...')
+            st.write(f'开始处理 {len(uploaded_files)} 个文件...')
             
-            for idx, uploaded_file in enumerate(uploaded_files, 1):
+            for file_idx, uploaded_file in enumerate(uploaded_files, 1):
                 # 读取文件内容
                 try:
                     ddl_content = uploaded_file.read().decode('utf-8')
@@ -428,56 +432,123 @@ if st.button('处理并导出'):
                     error_count += 1
                     continue
                 
-                # 从DDL中提取表名
-                ddl_lines = ddl_content.strip().splitlines()
-                base_table_name = None
-                for line in ddl_lines:
-                    if 'CREATE TABLE' in line.upper():
-                        parts = line.split()
-                        for i, part in enumerate(parts):
-                            if part.upper() == 'TABLE' and i + 1 < len(parts):
-                                base_table_name = parts[i + 1].rstrip('(').strip()
+                # 检查文件中是否包含多个DDL（用分号分隔）
+                if ';' in ddl_content:
+                    # 文件包含多个DDL，按分号分割
+                    ddl_list = []
+                    for ddl in ddl_content.split(';'):
+                        ddl = ddl.strip()
+                        if ddl and 'CREATE TABLE' in ddl.upper():
+                            ddl_list.append(ddl)
+                    
+                    if len(ddl_list) > 1:
+                        st.info(f'📋 文件 `{uploaded_file.name}` 包含 {len(ddl_list)} 个DDL语句')
+                    
+                    # 处理文件中的每个DDL
+                    for ddl_idx, ddl_text in enumerate(ddl_list, 1):
+                        total_ddl_count += 1
+                        
+                        # 从DDL中提取表名
+                        base_table_name = None
+                        for line in ddl_text.splitlines():
+                            if 'CREATE TABLE' in line.upper():
+                                parts = line.split()
+                                for i, part in enumerate(parts):
+                                    if part.upper() == 'TABLE' and i + 1 < len(parts):
+                                        base_table_name = parts[i + 1].rstrip('(').strip()
+                                        break
                                 break
-                        break
+                        
+                        if not base_table_name:
+                            st.warning(f'文件 {uploaded_file.name} 第{ddl_idx}个DDL: 无法提取表名，跳过')
+                            error_count += 1
+                            continue
+                        
+                        # 生成对比表名
+                        if compare_suffix:
+                            if '.' in base_table_name:
+                                schema, table = base_table_name.rsplit('.', 1)
+                                compare_table = f'{schema}.{table}{compare_suffix}'
+                            else:
+                                compare_table = f'{base_table_name}{compare_suffix}'
+                        else:
+                            compare_table = base_table_name + '_compare'
+                        
+                        # 为多DDL文件创建独立的expander
+                        expander_title = f'📄 文件{file_idx}: {uploaded_file.name} - DDL{ddl_idx}: {base_table_name}'
+                        with st.expander(expander_title):
+                            st.write(f'基础表: `{base_table_name}`')
+                            st.write(f'对比表: `{compare_table}`')
+                            
+                            sql, error = process_single_table(
+                                ddl_text, 
+                                compare_table, 
+                                ignore_fields, 
+                                where_basic_global, 
+                                where_compare_global
+                            )
+                            
+                            if sql:
+                                st.code(sql, language='sql')
+                                all_sqls.append(f'-- 文件: {uploaded_file.name} (DDL #{ddl_idx})\n-- 基础表: {base_table_name}\n-- 对比表: {compare_table}\n{sql}')
+                                success_count += 1
+                            else:
+                                st.error(f'错误: {error}')
+                                error_count += 1
                 
-                if not base_table_name:
-                    st.warning(f'文件 {uploaded_file.name}: 无法提取表名，跳过')
-                    error_count += 1
-                    continue
-                
-                # 生成对比表名
-                if compare_suffix:
-                    # 如果包含schema，需要正确处理
-                    if '.' in base_table_name:
-                        schema, table = base_table_name.rsplit('.', 1)
-                        compare_table = f'{schema}.{table}{compare_suffix}'
-                    else:
-                        compare_table = f'{base_table_name}{compare_suffix}'
                 else:
-                    compare_table = base_table_name + '_compare'
-                
-                with st.expander(f'📄 处理文件 {idx}/{len(uploaded_files)}: {uploaded_file.name}'):
-                    st.write(f'基础表: `{base_table_name}`')
-                    st.write(f'对比表: `{compare_table}`')
+                    # 文件只包含单个DDL
+                    total_ddl_count += 1
                     
-                    sql, error = process_single_table(
-                        ddl_content, 
-                        compare_table, 
-                        ignore_fields, 
-                        where_basic_global, 
-                        where_compare_global
-                    )
+                    # 从DDL中提取表名
+                    ddl_lines = ddl_content.strip().splitlines()
+                    base_table_name = None
+                    for line in ddl_lines:
+                        if 'CREATE TABLE' in line.upper():
+                            parts = line.split()
+                            for i, part in enumerate(parts):
+                                if part.upper() == 'TABLE' and i + 1 < len(parts):
+                                    base_table_name = parts[i + 1].rstrip('(').strip()
+                                    break
+                            break
                     
-                    if sql:
-                        st.code(sql, language='sql')
-                        all_sqls.append(f'-- 文件: {uploaded_file.name}\n-- 基础表: {base_table_name}\n-- 对比表: {compare_table}\n{sql}')
-                        success_count += 1
-                    else:
-                        st.error(f'错误: {error}')
+                    if not base_table_name:
+                        st.warning(f'文件 {uploaded_file.name}: 无法提取表名，跳过')
                         error_count += 1
+                        continue
+                    
+                    # 生成对比表名
+                    if compare_suffix:
+                        if '.' in base_table_name:
+                            schema, table = base_table_name.rsplit('.', 1)
+                            compare_table = f'{schema}.{table}{compare_suffix}'
+                        else:
+                            compare_table = f'{base_table_name}{compare_suffix}'
+                    else:
+                        compare_table = base_table_name + '_compare'
+                    
+                    with st.expander(f'📄 文件 {file_idx}/{len(uploaded_files)}: {uploaded_file.name}'):
+                        st.write(f'基础表: `{base_table_name}`')
+                        st.write(f'对比表: `{compare_table}`')
+                        
+                        sql, error = process_single_table(
+                            ddl_content, 
+                            compare_table, 
+                            ignore_fields, 
+                            where_basic_global, 
+                            where_compare_global
+                        )
+                        
+                        if sql:
+                            st.code(sql, language='sql')
+                            all_sqls.append(f'-- 文件: {uploaded_file.name}\n-- 基础表: {base_table_name}\n-- 对比表: {compare_table}\n{sql}')
+                            success_count += 1
+                        else:
+                            st.error(f'错误: {error}')
+                            error_count += 1
             
             if all_sqls:
-                st.success(f'✅ 批量处理完成！成功: {success_count}, 失败: {error_count}')
+                st.success(f'✅ 批量处理完成！总计处理 {total_ddl_count} 个DDL，成功: {success_count}, 失败: {error_count}')
                 st.write('### 所有生成的SQL语句:')
                 combined_sql = '\n\n' + '\n\n'.join(all_sqls)
                 st.code(combined_sql, language='sql')
