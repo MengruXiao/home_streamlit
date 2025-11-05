@@ -56,11 +56,46 @@ if processing_mode == '单表对比':
     text_input5 = st.text_area('输入对比表的WHERE条件(可选，不需要写WHERE关键字)', '',
                                help='例如: version_no = \'2025Q2V2\' and date > \'2024-01-01\'')
 elif processing_mode == '批量对比（文本输入）':
-    st.info('批量模式说明：每行输入一对表名，格式为 "基础表DDL|对比表名"，可选添加WHERE条件 "|基础表WHERE|对比表WHERE"')
-    batch_input = st.text_area('批量输入表对（每行一对）', 
-                               height=200,
-                               help='格式示例：\nCREATE TABLE schema.table1...|schema.table2\nCREATE TABLE schema.table3...|schema.table4|version_no=\'2025Q2V2\'|version_no=\'2025Q2V2\'')
-    text_input3 = st.text_area('输入需要忽略的字段(多个字段用逗号分隔，对所有表生效)', '')
+    st.info('📝 批量模式说明：支持两种输入格式')
+    st.markdown('''
+    **格式1（推荐）：** 使用分号 `;` 分隔多个DDL，系统自动生成对比表名
+    - 直接粘贴多个完整的DDL语句，用 `;` 分隔
+    - 例如：`CREATE TABLE schema.table1 (...);CREATE TABLE schema.table2 (...);`
+    
+    **格式2：** 每行一对，使用管道符 `|` 分隔
+    - 格式：`DDL|对比表名|基础表WHERE|对比表WHERE`
+    - 例如：`CREATE TABLE schema.table1...|schema.table1_compare`
+    ''')
+    
+    batch_input = st.text_area('批量输入DDL（支持分号或管道符分隔）', 
+                               height=300,
+                               help='推荐：直接粘贴多个DDL，用分号分隔。也支持每行一对的管道符格式。')
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        compare_suffix_batch = st.text_input(
+            '对比表后缀（用于分号分隔模式）', 
+            '_compare',
+            help='使用分号分隔DDL时，自动为每个表添加此后缀生成对比表名'
+        )
+    with col2:
+        text_input3 = st.text_area('输入需要忽略的字段(多个字段用逗号分隔，对所有表生效)', '', height=100)
+    
+    # WHERE条件设置
+    st.subheader('WHERE条件设置（可选，用于分号分隔模式）')
+    col3, col4 = st.columns(2)
+    with col3:
+        batch_where_basic = st.text_area(
+            '全局基础表WHERE条件', 
+            '',
+            help='将应用到所有基础表'
+        )
+    with col4:
+        batch_where_compare = st.text_area(
+            '全局对比表WHERE条件', 
+            '',
+            help='将应用到所有对比表'
+        )
 else:  # 批量对比（文件上传）
     st.info('📁 批量上传DDL文件模式：上传多个DDL文件（.sql或.txt格式），系统会自动为每个文件生成对比SQL语句')
     
@@ -188,8 +223,7 @@ if st.button('处理并导出'):
             
             where_basic = text_input4.strip() if 'text_input4' in locals() else ''
             where_compare = text_input5.strip() if 'text_input5' in locals() else ''
-            
-            # 显示应用的WHERE条件
+              # 显示应用的WHERE条件
             if where_basic:
                 st.info(f'基础表WHERE条件: {where_basic}')
             if where_compare:
@@ -213,60 +247,152 @@ if st.button('处理并导出'):
                 ignore_fields = [field.strip() for field in text_input3.split(',') if field.strip()]
                 st.info(f'将忽略以下字段: {", ".join(ignore_fields)}')
             
-            lines = batch_input.strip().split('\n')
-            all_sqls = []
-            success_count = 0
-            error_count = 0
-            
-            st.write(f'开始批量处理 {len(lines)} 对表...')
-            
-            for idx, line in enumerate(lines, 1):
-                line = line.strip()
-                if not line:
-                    continue
+            # 判断输入格式：是否包含分号（DDL分隔符）
+            if ';' in batch_input and '|' not in batch_input:
+                # 格式1：使用分号分隔多个DDL
+                st.info('🔍 检测到分号分隔的DDL格式')
                 
-                parts = line.split('|')
-                if len(parts) < 2:
-                    st.warning(f'第{idx}行格式错误，跳过: {line}')
-                    error_count += 1
-                    continue
+                # 获取全局WHERE条件
+                where_basic_global = batch_where_basic.strip() if 'batch_where_basic' in locals() else ''
+                where_compare_global = batch_where_compare.strip() if 'batch_where_compare' in locals() else ''
                 
-                ddl_text = parts[0].strip()
-                compare_table = parts[1].strip()
-                where_basic = parts[2].strip() if len(parts) > 2 else ''
-                where_compare = parts[3].strip() if len(parts) > 3 else ''
+                if where_basic_global:
+                    st.info(f'全局基础表WHERE条件: {where_basic_global}')
+                if where_compare_global:
+                    st.info(f'全局对比表WHERE条件: {where_compare_global}')
                 
-                with st.expander(f'处理第{idx}对: {compare_table}'):
-                    if where_basic:
-                        st.info(f'基础表WHERE条件: {where_basic}')
-                    if where_compare:
-                        st.info(f'对比表WHERE条件: {where_compare}')
+                # 按分号分割DDL，并清理空白
+                ddl_list = []
+                for ddl in batch_input.split(';'):
+                    ddl = ddl.strip()
+                    if ddl and 'CREATE TABLE' in ddl.upper():
+                        ddl_list.append(ddl)
+                
+                all_sqls = []
+                success_count = 0
+                error_count = 0
+                
+                st.write(f'开始批量处理 {len(ddl_list)} 个DDL...')
+                
+                for idx, ddl_text in enumerate(ddl_list, 1):
+                    # 从DDL中提取表名
+                    base_table_name = None
+                    for line in ddl_text.splitlines():
+                        if 'CREATE TABLE' in line.upper():
+                            parts = line.split()
+                            for i, part in enumerate(parts):
+                                if part.upper() == 'TABLE' and i + 1 < len(parts):
+                                    base_table_name = parts[i + 1].rstrip('(').strip()
+                                    break
+                            break
                     
-                    sql, error = process_single_table(ddl_text, compare_table, ignore_fields, where_basic, where_compare)
-                    
-                    if sql:
-                        st.code(sql, language='sql')
-                        all_sqls.append(f'-- 表对 {idx}: {compare_table}\n{sql}')
-                        success_count += 1
-                    else:
-                        st.error(f'错误: {error}')
+                    if not base_table_name:
+                        st.warning(f'第{idx}个DDL: 无法提取表名，跳过')
                         error_count += 1
-            
-            if all_sqls:
-                st.success(f'批量处理完成！成功: {success_count}, 失败: {error_count}')
-                st.write('### 所有生成的SQL语句:')
-                combined_sql = '\n\n' + '\n\n'.join(all_sqls)
-                st.code(combined_sql, language='sql')
+                        continue
+                    
+                    # 生成对比表名
+                    suffix = compare_suffix_batch if 'compare_suffix_batch' in locals() and compare_suffix_batch else '_compare'
+                    if '.' in base_table_name:
+                        schema, table = base_table_name.rsplit('.', 1)
+                        compare_table = f'{schema}.{table}{suffix}'
+                    else:
+                        compare_table = f'{base_table_name}{suffix}'
+                    
+                    with st.expander(f'📋 处理第{idx}个DDL: {base_table_name}'):
+                        st.write(f'基础表: `{base_table_name}`')
+                        st.write(f'对比表: `{compare_table}`')
+                        
+                        sql, error = process_single_table(
+                            ddl_text, 
+                            compare_table, 
+                            ignore_fields, 
+                            where_basic_global, 
+                            where_compare_global
+                        )
+                        
+                        if sql:
+                            st.code(sql, language='sql')
+                            all_sqls.append(f'-- DDL {idx}: {base_table_name} vs {compare_table}\n{sql}')
+                            success_count += 1
+                        else:
+                            st.error(f'错误: {error}')
+                            error_count += 1
                 
-                # 提供下载按钮
-                st.download_button(
-                    label='下载所有SQL语句',
-                    data=combined_sql,
-                    file_name='batch_except_sql.sql',
-                    mime='text/plain'
-                )
+                if all_sqls:
+                    st.success(f'✅ 批量处理完成！成功: {success_count}, 失败: {error_count}')
+                    st.write('### 所有生成的SQL语句:')
+                    combined_sql = '\n\n' + '\n\n'.join(all_sqls)
+                    st.code(combined_sql, language='sql')
+                    
+                    # 提供下载按钮
+                    st.download_button(
+                        label='📥 下载所有SQL语句',
+                        data=combined_sql,
+                        file_name='batch_except_sql_semicolon.sql',
+                        mime='text/plain'
+                    )
+                else:
+                    st.error('❌ 没有成功生成任何SQL语句')
+            
             else:
-                st.error('没有成功生成任何SQL语句')
+                # 格式2：使用管道符分隔（原有格式）
+                st.info('🔍 检测到管道符分隔格式')
+                
+                lines = batch_input.strip().split('\n')
+                all_sqls = []
+                success_count = 0
+                error_count = 0
+                
+                st.write(f'开始批量处理 {len(lines)} 对表...')
+                
+                for idx, line in enumerate(lines, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    parts = line.split('|')
+                    if len(parts) < 2:
+                        st.warning(f'第{idx}行格式错误，跳过: {line[:50]}...')
+                        error_count += 1
+                        continue
+                    
+                    ddl_text = parts[0].strip()
+                    compare_table = parts[1].strip()
+                    where_basic = parts[2].strip() if len(parts) > 2 else ''
+                    where_compare = parts[3].strip() if len(parts) > 3 else ''
+                    
+                    with st.expander(f'处理第{idx}对: {compare_table}'):
+                        if where_basic:
+                            st.info(f'基础表WHERE条件: {where_basic}')
+                        if where_compare:
+                            st.info(f'对比表WHERE条件: {where_compare}')
+                        
+                        sql, error = process_single_table(ddl_text, compare_table, ignore_fields, where_basic, where_compare)
+                        
+                        if sql:
+                            st.code(sql, language='sql')
+                            all_sqls.append(f'-- 表对 {idx}: {compare_table}\n{sql}')
+                            success_count += 1
+                        else:
+                            st.error(f'错误: {error}')
+                            error_count += 1
+                
+                if all_sqls:
+                    st.success(f'✅ 批量处理完成！成功: {success_count}, 失败: {error_count}')
+                    st.write('### 所有生成的SQL语句:')
+                    combined_sql = '\n\n' + '\n\n'.join(all_sqls)
+                    st.code(combined_sql, language='sql')
+                    
+                    # 提供下载按钮
+                    st.download_button(
+                        label='📥 下载所有SQL语句',
+                        data=combined_sql,
+                        file_name='batch_except_sql.sql',
+                        mime='text/plain'
+                    )
+                else:
+                    st.error('❌ 没有成功生成任何SQL语句')
         else:
             st.warning('请输入批量表对信息')
     
