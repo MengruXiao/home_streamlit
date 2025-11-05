@@ -86,12 +86,12 @@ if st.button('处理并导出'):
                         st.info(f'将忽略以下字段: {", ".join(ignore_fields)}')
                     
                     df = pd.DataFrame(columns, columns=['column_name','type'])
-                    
-                    # 过滤掉需要忽略的字段
+                      # 过滤掉需要忽略的字段
                     if ignore_fields:
                         df = df[~df['column_name'].isin(ignore_fields)]
                         st.write(f'原始字段数: {len(columns)}, 过滤后字段数: {len(df)}')
-                      if len(df) > 0:
+                    
+                    if len(df) > 0:
                         st.write('生成的except语句为:')
                         table_name_basic = lines[0].split(' ')[2]
                         table_name_compare = text_input2
